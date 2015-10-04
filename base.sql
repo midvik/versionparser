@@ -1,0 +1,1 @@
+CREATE TABLE parsed(site text, program text, version text);
