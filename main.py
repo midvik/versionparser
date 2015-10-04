@@ -34,11 +34,9 @@ def parse_site(url, sql_connection):
     page_nums = []
     for raw_a in soup.findAll('td', {'class':'page'}):
         page_num_text = raw_a.text 
-        if page_num_text.encode('utf-8').strip() == u'···'.encode('utf-8').strip():                    
-            #print raw_a.text
+        if page_num_text.encode('utf-8').strip() == u'···'.encode('utf-8').strip():                                
             pass
-        else:
-            #print page_num_text
+        else:            
             page_num = int(page_num_text)            
             if page_nums and (page_num - page_nums[-1]) > 1:
                 for i in xrange(page_nums[-1], page_num + 1):
@@ -71,8 +69,7 @@ def compare_versions(sql_connection, search_url, list_params, ver_params, conten
     header_row.th("MyDiv")
     header_row.th("Version")
     header_row.th("Search result")
-    header_row.th("Version")
-    header_row.th("Url")
+    header_row.th("Version")    
     
     for index, sql_row in enumerate(sql_cursor.execute("SELECT program, version, site FROM parsed")):        
         print index,
@@ -87,8 +84,6 @@ def compare_versions(sql_connection, search_url, list_params, ver_params, conten
             finded_name = result.a.string
             finded_url = result.a['href']
             
-#             if target_name.split(' ')[0] in str(finded_name).split(' '):
-            #print " ".join(finded_name.split(' ')[:-1])                
             if target_name == " ".join(finded_name.split(' ')[:-1]):
                 finded_page = urllib2.urlopen(finded_url)
                 finded_page_soup = BeautifulSoup(finded_page)
@@ -103,10 +98,10 @@ def compare_versions(sql_connection, search_url, list_params, ver_params, conten
                     table_row = my_table.tr
                     table_row.td(target_name)
                     table_row.td(target_version)                    
-                    table_row.td(finded_name)
-                    table_row.td(finded_version)
                     url_col = table_row.td
                     url_col.a(finded_name, href=finded_url)
+                    table_row.td(finded_version)
+                    
                     print("On MyDiv %s %s, on search %s %s " % (target_name, target_version, finded_name, finded_version))                            
     return html_output
     
