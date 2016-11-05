@@ -77,7 +77,7 @@ def parse_site(url, sql_connection):
                 sql_connection.commit()
 
 
-def compare_versions(sql_connection, search_url, list_params, ver_params, content_index=None):
+def compare_versions_download_com(sql_connection, search_url, list_params, ver_params, content_index=None):
     sql_cursor = sql_connection.cursor()
     html_output = HTML('html')
     my_table = html_output.body.table(border='1')
@@ -104,10 +104,13 @@ def compare_versions(sql_connection, search_url, list_params, ver_params, conten
         search_results_soup = search_page_soup.findAll(list_params[0], list_params[1])
 
         for result in search_results_soup[:2]:
-            found_name = result.a.string
+            title = result.findAll('div', {'class': 'title OneLinkNoTx'})
+            if not title:
+                continue
+            found_name = title[0].string
             found_url = result.a['href']
 
-            if target_name == " ".join(found_name.split(' ')[:-1]):
+            if target_name == found_name:
                 found_page = urllib2.urlopen(found_url)
                 found_page_soup = BeautifulSoup(found_page)
                 found_version = ""
@@ -214,8 +217,9 @@ def parse_section(section_url, engine):
         if engine == 'softpedia':
             result = compare_versions_softpedia(sql_connection, ('h4', {'class': 'ln'}))
         elif engine == 'download.com':
-            result = compare_versions(sql_connection, DOWNLOAD_COM_SEARCH,
-                                      ('h4', {'class': 'ln'}), ('span', {'itemprop': 'softwareVersion'}))
+            result = compare_versions_download_com(sql_connection, DOWNLOAD_COM_SEARCH,
+                                                   ('div', {'id': 'search-results'}), ('tr', {'id': 'specsPubVersion'}),
+                                                   3)
         else:
             print "Unknown engine"
             sql_connection.close()
