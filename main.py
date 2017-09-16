@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-import urllib2
-import httplib
+import requests
+import requests.exceptions
 import sqlite3
 from distutils.version import LooseVersion
 import re
-import urlparse
 
-from BeautifulSoup import BeautifulSoup
-from html import HTML
+from bs4 import BeautifulSoup
 import click
 from tqdm import tqdm
+import dominate
+from dominate.tags import *
 
 
 PORTAL_NAME = 'http://soft.mydiv.net'
@@ -17,27 +17,14 @@ DOWNLOAD_COM_SEARCH = 'http://download.cnet.com/1770-20_4-0.html?platform=Window
 SOFTPEDIA_SEARCH = 'http://win.softpedia.com/dyn-search.php?search_term='
 
 
-def url_encode_non_ascii(b):
-    return re.sub('[\x80-\xFF]', lambda c: '%%%02x' % ord(c.group(0)), b)
-
-
-def iri_to_uri(iri):
-    parts = urlparse.urlparse(iri)
-    return urlparse.urlunparse(
-        part.encode('idna') if parti == 1 else url_encode_non_ascii(part.encode('utf-8'))
-        for parti, part in enumerate(parts)
-    )
-
-
 def unique(seq):
-    # Not order preserving
-    return {}.fromkeys(seq).keys()
+    return list(set(seq))
 
 
 def parse_site(url, sql_connection):
     sql_cursor = sql_connection.cursor()
-    page_html = urllib2.urlopen(url)
-    soup = BeautifulSoup(page_html)
+    page_html = requests.get(url).text
+    soup = BeautifulSoup(page_html, "html.parser")
 
     pages = []
     page_nums = []
@@ -54,7 +41,7 @@ def parse_site(url, sql_connection):
         else:
             page_num = int(page_num_text)
             if page_nums and (page_num - page_nums[-1]) > 1:
-                for i in xrange(page_nums[-1], page_num + 1):
+                for i in range(page_nums[-1], page_num + 1):
                     pages.append(url + 'index' + str(i) + ".html")
             page_nums.append(page_num)
             pages.append(PORTAL_NAME + str(raw_a.a['href']))
@@ -62,8 +49,8 @@ def parse_site(url, sql_connection):
     pages = unique(pages)
     pages.append(url)
 
-    for pg in tqdm(pages, desc='Parsing pages'):
-        ps = BeautifulSoup(urllib2.urlopen(pg))
+    for page_url in tqdm(pages, desc='Parsing pages'):
+        ps = BeautifulSoup(requests.get(page_url).text, "html.parser")
         if not ps:
             continue
         for item in ps.findAll('a', {'class': 'itemname'}):
@@ -87,9 +74,9 @@ def get_page(sql_connection, engine):
         target_version = sql_row[1]
         target_url = sql_row[2]
         try:
-            search_page_html = urllib2.urlopen(iri_to_uri(engine + target_name))
-            search_page_soup = BeautifulSoup(search_page_html)
-        except httplib.IncompleteRead, _:
+            search_page_html = requests.get(engine + target_name).text
+            search_page_soup = BeautifulSoup(search_page_html, "html.parser")
+        except:
             continue
 
         if not search_page_soup:
@@ -110,9 +97,8 @@ def compare_versions_download_com(sql_connection, list_params, ver_params, conte
             found_url = result.a['href']
 
             if target_name.lower() == found_name.lower():
-                found_page = urllib2.urlopen(found_url)
-                found_page_soup = BeautifulSoup(found_page)
-                found_version = ""
+                found_page = requests.get(found_url).text
+                found_page_soup = BeautifulSoup(found_page, "html.parser")
                 if not found_page_soup:
                     continue
 
@@ -130,7 +116,17 @@ def compare_versions_download_com(sql_connection, list_params, ver_params, conte
                 yield target_name, target_version, found_name, found_version, target_url, found_url
 
 
+def get_next_proxy():
+    while True:
+        with open("proxy.list", 'r') as f:
+            proxy_list = f.readlines()
+            for proxy in proxy_list:
+                yield f'http://{proxy}'.strip()
+
+
 def compare_versions_softpedia(sql_connection, list_params):
+    proxy = None
+    proxy_generator = get_next_proxy()
     for search_page_soup, target_name, target_version, target_url in get_page(sql_connection, SOFTPEDIA_SEARCH):
         search_results_soup = search_page_soup.findAll(list_params[0], list_params[1])
 
@@ -139,8 +135,29 @@ def compare_versions_softpedia(sql_connection, list_params):
             found_url = result.a['href']
 
             if target_name.lower() == " ".join(found_name.lower().split(' ')[:-1]):
-                found_page = urllib2.urlopen(found_url)
-                found_page_soup = BeautifulSoup(found_page)
+                found_page = ''
+                for _ in range(3):
+                    try:
+                        found_page = requests.get(found_url, proxies=proxy, timeout=5).text
+                    except requests.exceptions.Timeout:
+                        proxy_address = next(proxy_generator)
+                        print(f'Timeout. Changing proxy to {proxy_address}')
+                        proxy = {'http': proxy_address}
+                        continue
+                    except requests.exceptions.ProxyError:
+                        proxy_address = next(proxy_generator)
+                        print(f'Proxy error. Changing proxy to {proxy_address}')
+                        proxy = {'http': proxy_address}
+                        continue
+
+                    if not len(found_page):
+                        proxy_address = next(proxy_generator)
+                        print(f'Properly banned. Changing proxy to {proxy_address}')
+                        proxy = {'http': proxy_address}
+                    else:
+                        break
+
+                found_page_soup = BeautifulSoup(found_page, "html.parser")
                 found_version = ""
                 if not found_page_soup:
                     continue
@@ -176,35 +193,44 @@ def parse_section(section_url, engine):
             results = compare_versions_download_com(sql_connection, ('div', {'id': 'search-results'}),
                                                     ('tr', {'id': 'specsPubVersion'}), 3)
         else:
-            print "Unknown engine"
+            print("Unknown engine")
             return 1
 
-        html_output = HTML('html')
-        my_table = html_output.body.table(border='1')
-        header_row = my_table.tr
-        header_row.th("MyDiv")
-        header_row.th("Version")
-        header_row.th("Search result")
-        header_row.th("Version")
-        try:
-            for target_name, target_version, found_name, found_version, target_url, found_url in results:
-                if LooseVersion(target_version) < LooseVersion(found_version):
-                    table_row = my_table.tr
-                    target_url_col = table_row.td
-                    target_url_col.a(target_name, href=target_url)
-                    table_row.td(target_version)
-                    url_col = table_row.td
-                    url_col.a(found_name, href=found_url)
-                    table_row.td(found_version)
+        with dominate.document(title=engine) as doc:
+            with doc.add(table()) as data_table:
+                attr(border=2)
+                table_header = tr()
+                table_header += th("MyDiv")
+                table_header += th("Version")
+                table_header += th("Search result")
+                table_header += th("Version")
 
-                    print("On MyDiv %s %s, on search %s %s " % (target_name, target_version, found_name, found_version))
-        finally:
-            with open(engine + ".html", "w") as f:
-                f.write(unicode(html_output).encode(encoding='utf-8'))
+                data_table.add(table_header)
+
+                try:
+                    for target_name, target_version, found_name, found_version, target_url, found_url in results:
+                        try:
+                            if LooseVersion(target_version.split()[0]) < LooseVersion(found_version.split()[0]):
+                                data_row = tr()
+                                data_row += td(a(target_name, href=target_url))
+                                data_row += td(target_version)
+                                data_row += td(a(found_name, href=found_url))
+                                data_row += td(found_version)
+
+                                data_table.add(data_row)
+
+                                print("On MyDiv %s %s, on search %s %s " %
+                                      (target_name, target_version, found_name, found_version))
+                        except TypeError:
+                            print(f"Version comparison failed on {target_version} and {found_version}")
+                finally:
+                    with open(engine + ".html", "w") as f:
+                        f.write(doc.render())
 
 
 def main():
     parse_section()
+
 
 if __name__ == '__main__':
     exit(main())
